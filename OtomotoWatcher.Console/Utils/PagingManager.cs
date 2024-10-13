@@ -1,99 +1,169 @@
 ﻿using AngleSharp.Dom;
 using AngleSharp.Html.Dom;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using System.Web;
 
 namespace OtomotoWatcher.Console.Utils
 {
     internal class PagingManager
     {
+        private bool _backwardsButtonDisabled = false;
+        private bool _forwardsButtonDisabled = false;
+
         public List<PageData> Pages { get; private set; } = [];
 
         public PagingManager(IDocument document)
         {
-            var elePagerAll = document.QuerySelectorAll("[data-testid='pagination-list']");
-            var elePager = elePagerAll.SingleOrDefault();
+            if (string.IsNullOrEmpty(document.Origin))
+                throw new Exception("Paging: document origin null");
 
-            if (elePager != null)
+            if (document.Origin.Contains("olx.pl", StringComparison.InvariantCultureIgnoreCase))
             {
-                var elePageButtons = elePager.GetElementsByClassName("pagination-item");
-                bool backwardsButtonDisabled = false;
-                bool forwardsButtonDisabled = false;
-
-                foreach (var eleButton in elePageButtons)
-                {
-                    bool skip = false;
-                    var cst = (IHtmlElement)eleButton;
-
-                    if (cst.Dataset.Any(x => x.Key == "testid" && x.Value == "pagination-step-backwards"))
-                    {
-                        skip = true;
-                        backwardsButtonDisabled = cst.GetAttribute("aria-disabled") == "true";
-                    }
-
-                    if (cst.Dataset.Any(x => x.Key == "testid" && x.Value == "pagination-step-forwards"))
-                    {
-                        skip = true;
-                        forwardsButtonDisabled = cst.GetAttribute("aria-disabled") == "true";
-                    }
-
-                    if (skip)
-                        continue;
-
-                    var eleSpan = eleButton.GetElementsByTagName("span");
-                    var spanValue = eleSpan.Single().TextContent;
-                    var pageNumber = int.Parse(spanValue);
-                    var active = eleButton.ClassList.Any(x => x == "pagination-item__active");
-
-                    var hrefUri = eleButton
-                        .GetElementsByTagName("a")
-                        .SingleOrDefault()?
-                        .GetAttribute("href");
-
-                    if (string.IsNullOrEmpty(hrefUri))
-                        throw new Exception("Paging: href uri missing");
-
-                    Pages.Add(new PageData()
-                    {
-                        PageNumber = pageNumber,
-                        Url = document.BaseUri + hrefUri,
-                        PageStatus = active ? PageStatus.Current : PageStatus.None,
-                        PageType = pageNumber == 1 ? PageType.First : PageType.None
-                    });
-                }
-
-                if (!Pages.Any(x => x.PageStatus == PageStatus.Current))
-                    throw new Exception("Paging: current page missing");
-
-                Pages = Pages.OrderBy(x => x.PageNumber).ToList();
-                for (int i = 0; i < Pages.Count; i++)
-                {
-                    var page = Pages[i];
-                    if(page.PageStatus == PageStatus.Current)
-                    {
-                        if(i > 0)
-                            Pages[i - 1].PageStatus = PageStatus.Previous;
-
-                        if (i + 1 < Pages.Count)
-                            Pages[i + 1].PageStatus = PageStatus.Next;
-                        else if (forwardsButtonDisabled)
-                            page.PageType = PageType.Last;
-                    }
-                }
+                CreateOlx(document);
+            }
+            else if (document.Origin.Contains("otomoto.pl", StringComparison.InvariantCultureIgnoreCase))
+            {
+                CreateOtomoto(document);
             }
             else
             {
-                 Pages.Add(new PageData()
-                 {
-                     PageNumber = 1,
-                     Url = document.Url,
-                     PageType = PageType.First,
-                     PageStatus = PageStatus.Current
-                 });
+                throw new Exception("Paging: document origin invalid");
             }
+
+            var uri = new Uri(document.Url);
+            var queryStringValues = HttpUtility.ParseQueryString(uri.Query);
+            var queryPage = queryStringValues.GetValues("page")?.SingleOrDefault();
+            if (string.IsNullOrWhiteSpace(queryPage))
+                throw new Exception("Paging: current page from url missing");
+            int currentPage = int.Parse(queryPage);
+
+            Pages = Pages.OrderBy(x => x.PageNumber).ToList();
+            for (int i = 0; i < Pages.Count; i++)
+            {
+                var page = Pages[i];
+
+                if (page.PageNumber == 1)
+                    page.PageType = PageType.First;
+
+                if (page.PageNumber == currentPage)
+                {
+                    page.PageStatus = PageStatus.Current;
+
+
+                    if (i > 0)
+                        Pages[i - 1].PageStatus = PageStatus.Previous;
+
+                    if (i + 1 < Pages.Count)
+                        Pages[i + 1].PageStatus = PageStatus.Next;
+                    else if (_forwardsButtonDisabled)
+                        page.PageType = PageType.Last;
+                }
+            }
+
+
+        }
+
+        private void CreateDefault(IDocument document)
+        {
+            Pages.Add(new PageData()
+            {
+                PageNumber = 1,
+                Url = document.Url,
+                PageType = PageType.First,
+                PageStatus = PageStatus.Current
+            });
+        }
+
+        private void CreateOtomoto(IDocument document)
+        {
+            var elePagerAll = document.QuerySelectorAll("[data-testid='pagination-list']");
+            var elePager = elePagerAll.SingleOrDefault();
+
+            if (elePager == null)
+            {
+                CreateDefault(document);
+                return;
+            }
+
+            var elePageButtons = elePager.GetElementsByClassName("pagination-item");
+
+            foreach (var eleButton in elePageButtons)
+            {
+                bool skip = false;
+                var cst = (IHtmlElement)eleButton;
+
+                if (cst.Dataset.Any(x => x.Key == "testid" && x.Value == "pagination-step-backwards"))
+                {
+                    skip = true;
+                    _backwardsButtonDisabled = cst.GetAttribute("aria-disabled") == "true";
+                }
+
+                if (cst.Dataset.Any(x => x.Key == "testid" && x.Value == "pagination-step-forwards"))
+                {
+                    skip = true;
+                    _forwardsButtonDisabled = cst.GetAttribute("aria-disabled") == "true";
+                }
+
+                if (skip)
+                    continue;
+
+                var eleSpan = eleButton.GetElementsByTagName("span");
+                var spanValue = eleSpan.Single().TextContent;
+                var pageNumber = int.Parse(spanValue);
+
+                var hrefUri = eleButton
+                    .GetElementsByTagName("a")
+                    .SingleOrDefault()?
+                    .GetAttribute("href");
+
+                if (string.IsNullOrEmpty(hrefUri))
+                    throw new Exception("Paging: href uri missing");
+
+                InnerAddPage(document, pageNumber, hrefUri);
+            }
+        }
+
+        private void CreateOlx(IDocument document)
+        {
+            var elePagerAll = document.QuerySelectorAll("[data-testid='pagination-list']");
+            var elePager = elePagerAll.SingleOrDefault();
+
+            if (elePager == null)
+            {
+                CreateDefault(document);
+                return;
+            }
+
+            if (elePager.QuerySelector("[data-testid='pagination-back']") == null)
+                _backwardsButtonDisabled = true;
+
+            if (elePager.QuerySelector("[data-testid='pagination-forward']") == null)
+                _forwardsButtonDisabled = true;
+
+            var elePageButtons = elePager.GetElementsByClassName("pagination-item");
+
+            foreach(var eleButton in elePageButtons)
+            {
+                var eleHref = eleButton.GetElementsByTagName("a").Single();
+                var innerValue = eleHref.TextContent;
+                var pageNumber = int.Parse(innerValue);
+                var hrefUri = eleHref?.GetAttribute("href");
+
+                if (string.IsNullOrEmpty(hrefUri))
+                    throw new Exception("Paging: href uri missing");
+
+                InnerAddPage(document, pageNumber, hrefUri);
+            }
+        }
+
+        private void InnerAddPage(IDocument document, int pageNumber, string hrefUri)
+        {
+            Pages.Add(new PageData()
+            {
+                PageNumber = pageNumber,
+                Url = document.Origin + hrefUri,
+                PageStatus = PageStatus.None,
+                PageType = PageType.None
+            });
         }
 
         public class PageData
